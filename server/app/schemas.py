@@ -26,12 +26,38 @@ class JoinRequest(BaseModel):
     requester_rtc_uid: int = Field(ge=1, le=2_147_483_647)
     agent_profile: str | None = Field(default=None, max_length=256)
     system_prompt: str | None = Field(default=None, max_length=8_000)
+    # Which coach persona to join as. Defaults to "delivery" (the original
+    # single-coach behavior) so older clients/tests that omit this keep
+    # working unchanged.
+    role: str = Field(default="delivery", min_length=1, max_length=32)
 
 
 class JoinResponse(BaseModel):
     agent_id: str
     created_at_unix: int
     status: str
+    role: str = "delivery"
+    rtc_uid: int = 0
+
+
+class SwitchRoleRequest(BaseModel):
+    channel_name: str = Field(min_length=1, max_length=64)
+    requester_rtc_uid: int = Field(ge=1, le=2_147_483_647)
+    role: str = Field(min_length=1, max_length=32)
+    agent_profile: str | None = Field(default=None, max_length=256)
+    system_prompt: str | None = Field(default=None, max_length=8_000)
+
+
+class CoachRoleInfo(BaseModel):
+    role: str
+    agent_id: str
+    rtc_uid: int
+    agent_state: str
+
+
+class ActiveCoachResponse(BaseModel):
+    active_role: str | None
+    roles: list[CoachRoleInfo]
 
 
 class AgentActionRequest(BaseModel):

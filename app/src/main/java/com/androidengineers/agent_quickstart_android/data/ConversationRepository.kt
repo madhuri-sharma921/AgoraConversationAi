@@ -20,10 +20,26 @@ class ConversationRepository(
         channelName: String,
         requesterRtcUid: String,
         systemPrompt: String? = null,
+        role: String = "delivery",
     ): AgentInviteResult {
         return api.inviteAgent(
             channelName = channelName,
             requesterRtcUid = requesterRtcUid,
+            systemPrompt = systemPrompt,
+            role = role,
+        )
+    }
+
+    suspend fun switchCoachRole(
+        channelName: String,
+        requesterRtcUid: String,
+        role: String,
+        systemPrompt: String? = null,
+    ): AgentInviteResult {
+        return api.switchCoachRole(
+            channelName = channelName,
+            requesterRtcUid = requesterRtcUid,
+            role = role,
             systemPrompt = systemPrompt,
         )
     }

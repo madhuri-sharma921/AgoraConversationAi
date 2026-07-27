@@ -105,10 +105,12 @@ class AgoraClient:
         requester_rtc_uid: int,
         agent_profile: str | None = None,
         system_prompt: str | None = None,
+        agent_rtc_uid: int | None = None,
     ) -> dict[str, Any]:
+        resolved_agent_uid = agent_rtc_uid if agent_rtc_uid is not None else self.settings.agent_uid
         session = self._build_agent(system_prompt).create_async_session(
             channel=channel_name,
-            agent_uid=str(self.settings.agent_uid),
+            agent_uid=str(resolved_agent_uid),
             remote_uids=[str(requester_rtc_uid)],
             name=f"android-server-agent-{int(time.time())}-{secrets.randbelow(9000) + 1000}",
             idle_timeout=30,
@@ -129,6 +131,7 @@ class AgoraClient:
             "agent_id": agent_id,
             "create_ts": int(time.time()),
             "status": "started",
+            "rtc_uid": resolved_agent_uid,
         }
 
     async def interrupt_agent(self, agent_id: str, channel_name: str) -> None:

@@ -69,6 +69,8 @@ data class AgentInviteResult(
     val agentId: String,
     val createTimestampSeconds: Long? = null,
     val state: String? = null,
+    val role: String = "delivery",
+    val rtcUid: Int = 0,
 )
 
 data class RenewalTokens(

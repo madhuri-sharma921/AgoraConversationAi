@@ -18,6 +18,7 @@ import io.agora.rtm.ErrorInfo
 import io.agora.rtm.LinkStateEvent
 import io.agora.rtm.MessageEvent
 import io.agora.rtm.PresenceEvent
+import io.agora.rtm.PublishOptions
 import io.agora.rtm.ResultCallback
 import io.agora.rtm.RtmClient
 import io.agora.rtm.RtmConfig
@@ -75,10 +76,39 @@ class AgoraConversationSessionManager(
     private var renewTokensProvider: (suspend (String, Int, String) -> RenewalTokens)? = null
     private var joinDeferred: CompletableDeferred<Int>? = null
     private var activeAgentId: String? = null
+
+    // Multi-agent tracking (point 3: multiple AI coaches). Only one coach's
+    // agent is ever actually joined/speaking in the RTC channel at a time —
+    // see CoachRole.kt and server/app/routes.py switch_role for why (the
+    // ConvoAI SDK has no native mute). This map remembers every role that
+    // has EVER had a live agent_id this session, so switching back to a
+    // role the server still has a slot for can resume it; activeCoachRole
+    // is whichever one currently has the floor.
+    private val agentIdByRole = mutableMapOf<String, String>()
+    private var activeCoachRole: String? = null
+
     private var currentRtmUserId: String? = null
     private var currentAgentTurnId: Long? = null
     private var interruptRequestedTurnId: Long? = null
     private var lastInterruptRequestAtMs: Long = 0L
+
+    // Real (not proxy) interrupt latency tracking: set the moment we ask the
+    // agent to stop because the user started speaking over it, cleared once
+    // measured against the agent's next non-SPEAKING state transition. This
+    // is the actual "user spoke -> agent stopped talking" wall-clock gap,
+    // as opposed to FillerFreeViewModel's old userWasSpeaking heuristic.
+    private var interruptRequestedAtMsForLatency: Long? = null
+    private var onInterruptLatencyMeasured: ((Long) -> Unit)? = null
+
+    /**
+     * Registers a callback invoked with the measured interrupt latency (ms)
+     * each time a user-triggered barge-in completes, i.e. the elapsed time
+     * between [requestAgentInterruptFromUserSpeech] firing and the agent's
+     * state next leaving SPEAKING. Pass null to unregister.
+     */
+    fun setOnInterruptLatencyMeasured(listener: ((Long) -> Unit)?) {
+        onInterruptLatencyMeasured = listener
+    }
 
     init {
         scope.launch {
@@ -110,6 +140,8 @@ class AgoraConversationSessionManager(
         transcriptAssembler.reset()
         micRequestedEnabled = true
         activeAgentId = null
+        agentIdByRole.clear()
+        activeCoachRole = null
         currentRtmUserId = bootstrap.rtmUserId
         currentAgentTurnId = null
         interruptRequestedTurnId = null
@@ -147,10 +179,13 @@ class AgoraConversationSessionManager(
         currentAgentRtcUid = 0
         micRequestedEnabled = true
         activeAgentId = null
+        agentIdByRole.clear()
+        activeCoachRole = null
         currentRtmUserId = null
         currentAgentTurnId = null
         interruptRequestedTurnId = null
         lastInterruptRequestAtMs = 0L
+        interruptRequestedAtMsForLatency = null
         audioSessionManager.stop()
 
         val channel = currentChannel
@@ -193,6 +228,28 @@ class AgoraConversationSessionManager(
     fun setActiveAgentId(agentId: String?) {
         activeAgentId = agentId
     }
+
+    /**
+     * Registers which coach role currently has the floor, its agent_id, and
+     * its RTC UID (each role gets a distinct UID server-side — see
+     * Settings.rtc_uid_for_role in config.py — since Agora RTC identifies
+     * remote streams by UID). Call this after a successful join or
+     * switch-role response. Updates [currentAgentRtcUid] so RTC join/leave
+     * presence detection (onUserJoined/onUserOffline) tracks the right UID.
+     */
+    fun setCoachAgent(role: String, agentId: String, rtcUid: Int) {
+        agentIdByRole[role] = agentId
+        activeCoachRole = role
+        activeAgentId = agentId
+        currentAgentRtcUid = rtcUid
+        updateSnapshot { it.copy(isAgentRtcConnected = false) }
+    }
+
+    /** The coach role currently holding the floor, or null if none has joined yet. */
+    fun activeCoachRole(): String? = activeCoachRole
+
+    /** agent_id already seen for [role] this session, if the server previously reported one. */
+    fun agentIdForRole(role: String): String? = agentIdByRole[role]
 
     private suspend fun ensureRtcEngine(appId: String) = withContext(Dispatchers.Main.immediate) {
         if (rtcEngine != null) {
@@ -328,9 +385,9 @@ class AgoraConversationSessionManager(
         updateSnapshot { current ->
             val duplicate = current.issues.any { issue ->
                 issue.source == source &&
-                    issue.code == code &&
-                    issue.message == message &&
-                    abs(issue.timestampMillis - timestampMillis) < 1_500L
+                        issue.code == code &&
+                        issue.message == message &&
+                        abs(issue.timestampMillis - timestampMillis) < 1_500L
             }
             if (duplicate) {
                 current
@@ -386,6 +443,13 @@ class AgoraConversationSessionManager(
                 interruptRequestedTurnId = null
                 audioSessionManager.setMicrophoneEnabled(micRequestedEnabled)
                 Log.i(TAG, "Agent ready; microphone restored to requested state")
+
+                interruptRequestedAtMsForLatency?.let { requestedAtMs ->
+                    val latencyMs = (timestampMillis - requestedAtMs).coerceAtLeast(0L)
+                    interruptRequestedAtMsForLatency = null
+                    Log.i(TAG, "interrupt_latency_measured_ms=$latencyMs")
+                    onInterruptLatencyMeasured?.invoke(latencyMs)
+                }
             }
 
             else -> Unit
@@ -501,7 +565,7 @@ class AgoraConversationSessionManager(
                 source = "rtm-signaling",
                 code = payload.opt("code")?.toString() ?: "unknown",
                 message = "${payload.optString("module").ifBlank { "unknown" }}: " +
-                    payload.optString("message").ifBlank { "Unknown signaling error." },
+                        payload.optString("message").ifBlank { "Unknown signaling error." },
                 timestampMillis = normalizeTimestampMs(
                     payload.optionalLong("send_ts") ?: System.currentTimeMillis()
                 ),
@@ -574,6 +638,7 @@ class AgoraConversationSessionManager(
 
         interruptRequestedTurnId = turnId
         lastInterruptRequestAtMs = now
+        interruptRequestedAtMsForLatency = now
         scope.launch {
             runCatching {
                 repository.interruptConversation(
@@ -591,6 +656,29 @@ class AgoraConversationSessionManager(
                     code = turnId?.toString() ?: "user-transcription",
                     message = error.message ?: "Failed to interrupt the cloud agent.",
                 )
+            }
+        }
+    }
+
+    private var lastSignalPushMs = 0L
+    private val signalPushThrottleMs = 5_000L
+
+    /**
+     * Pushes a coarse coaching signal (emotion, posture, active-coach routing)
+     * to the agent over the same RTM channel already used for transcript sync.
+     * Throttled client-side so we don't flood RTM on every transcript chunk.
+     * Silently no-ops if there's no active RTM client/channel (e.g. mid-teardown),
+     * matching how other best-effort RTM sends in this class already behave.
+     */
+    suspend fun pushCoachSignal(signal: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastSignalPushMs < signalPushThrottleMs) return
+        val client = rtmClient ?: return
+        val channel = currentChannel ?: return
+        lastSignalPushMs = now
+        runCatching {
+            awaitRtmVoid { callback ->
+                client.publish(channel, "[signal] $signal", PublishOptions(), callback)
             }
         }
     }
@@ -711,7 +799,7 @@ class AgoraConversationSessionManager(
             when (event.getCurrentState()) {
                 RtmConstants.RtmLinkState.FAILED,
                 RtmConstants.RtmLinkState.DISCONNECTED,
-                -> addIssue(
+                    -> addIssue(
                     source = "rtm",
                     code = event.getReasonCode().name,
                     message = "RTM link ${event.getCurrentState().name.lowercase(Locale.ROOT)} (${event.getReasonCode().name}).",

@@ -75,6 +75,7 @@ class ConversationAgoraApi(
         channelName: String,
         requesterRtcUid: String,
         systemPrompt: String? = null,
+        role: String = "delivery",
     ): AgentInviteResult {
         val body = service.join(
             request = JoinRequest(
@@ -82,12 +83,46 @@ class ConversationAgoraApi(
                 requesterRtcUid = requesterRtcUid.toIntOrNull()
                     ?: throw IOException("The requester RTC UID must be numeric."),
                 systemPrompt = systemPrompt,
+                role = role,
             ),
         ).requireBody()
         return AgentInviteResult(
             agentId = body.agentId.requireValue("agent_id"),
             createTimestampSeconds = body.createdAtUnix,
             state = body.status,
+            role = body.role ?: role,
+            rtcUid = body.rtcUid ?: 0,
+        )
+    }
+
+    /**
+     * Hands the "floor" to a different coach persona in the same channel.
+     * See server routes.py switch_role: since the ConvoAI SDK has no native
+     * mute, this leaves the currently active role's agent and joins/resumes
+     * the requested role's agent, so only one coach is ever actually
+     * speaking at a time.
+     */
+    suspend fun switchCoachRole(
+        channelName: String,
+        requesterRtcUid: String,
+        role: String,
+        systemPrompt: String? = null,
+    ): AgentInviteResult {
+        val body = service.switchRole(
+            request = SwitchRoleRequest(
+                channelName = channelName,
+                requesterRtcUid = requesterRtcUid.toIntOrNull()
+                    ?: throw IOException("The requester RTC UID must be numeric."),
+                role = role,
+                systemPrompt = systemPrompt,
+            ),
+        ).requireBody()
+        return AgentInviteResult(
+            agentId = body.agentId.requireValue("agent_id"),
+            createTimestampSeconds = body.createdAtUnix,
+            state = body.status,
+            role = body.role ?: role,
+            rtcUid = body.rtcUid ?: 0,
         )
     }
 
@@ -144,6 +179,11 @@ class ConversationAgoraApi(
             @Body request: JoinRequest,
         ): Response<JoinResponse>
 
+        @POST("v1/conversation/switch-role")
+        suspend fun switchRole(
+            @Body request: SwitchRoleRequest,
+        ): Response<JoinResponse>
+
         @POST("v1/conversation/interrupt")
         suspend fun interrupt(
             @Body request: AgentActionRequest,
@@ -165,6 +205,14 @@ class ConversationAgoraApi(
     private data class JoinRequest(
         @SerializedName("channel_name") val channelName: String,
         @SerializedName("requester_rtc_uid") val requesterRtcUid: Int,
+        @SerializedName("system_prompt") val systemPrompt: String? = null,
+        @SerializedName("role") val role: String = "delivery",
+    )
+
+    private data class SwitchRoleRequest(
+        @SerializedName("channel_name") val channelName: String,
+        @SerializedName("requester_rtc_uid") val requesterRtcUid: Int,
+        @SerializedName("role") val role: String,
         @SerializedName("system_prompt") val systemPrompt: String? = null,
     )
 
@@ -195,6 +243,8 @@ class ConversationAgoraApi(
         @SerializedName("agent_id") val agentId: String? = null,
         @SerializedName("created_at_unix") val createdAtUnix: Long? = null,
         val status: String? = null,
+        val role: String? = null,
+        @SerializedName("rtc_uid") val rtcUid: Int? = null,
     )
 
     private data class RefreshResponse(

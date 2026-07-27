@@ -24,6 +24,9 @@ class Settings:
     tts_voice_id: str = "English_captivating_female1"
     agora_area: str = "NORTH_AMERICA"
     agent_uid: int = 123456
+    # The 3 coach personas available for the multi-agent feature. Order
+    # matters only for the UID offsets below, not for any priority.
+    coach_roles: tuple[str, ...] = ("delivery", "content", "energy")
     host: str = "127.0.0.1"
     port: int = 8000
     allowed_origins: tuple[str, ...] = ("*",)
@@ -65,3 +68,16 @@ class Settings:
         ]
         if missing:
             raise RuntimeError(f"Missing required server configuration: {', '.join(missing)}")
+
+    def rtc_uid_for_role(self, role: str) -> int:
+        """Deterministic, distinct RTC UID per coach role.
+
+        Agora RTC identifies remote audio streams by UID, so 3 coach
+        personas that can each independently join the same channel need 3
+        distinct UIDs, not one shared `agent_uid`. Offsetting by role index
+        keeps this stable across restarts without needing extra config.
+        """
+        if role not in self.coach_roles:
+            return self.agent_uid
+        offset = self.coach_roles.index(role)
+        return self.agent_uid + offset

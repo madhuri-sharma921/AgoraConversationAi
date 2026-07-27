@@ -49,6 +49,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // Point 4 (visual coaching): CAMERA is a separate, optional
+                // permission from RECORD_AUDIO — a session runs fine without
+                // it. If denied, visual coaching simply never turns on;
+                // nothing else about the session is affected. The user just
+                // re-taps the toggle once permission is granted.
+                val cameraPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) { /* no-op: see FillerFreeScreen's hasCameraPermission() re-check on next toggle tap */ }
+
                 FillerFreeScreen(
                     viewModel = viewModel,
                     onRequestStart = {
@@ -61,6 +70,15 @@ class MainActivity : ComponentActivity() {
                         } else {
                             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
+                    },
+                    hasCameraPermission = {
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.CAMERA,
+                        ) == PackageManager.PERMISSION_GRANTED
+                    },
+                    onRequestCameraPermission = {
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     },
                 )
             }

@@ -11,7 +11,11 @@ import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.Spe
  */
 class BuildSessionSummaryUseCase {
 
-    operator fun invoke(stats: SessionStats, events: List<SpeechEvent>): SessionSummary {
+    operator fun invoke(
+        stats: SessionStats,
+        events: List<SpeechEvent>,
+        avgInterruptLatencyMs: Long? = null,
+    ): SessionSummary {
         val topOffender = events
             .filter { it.type == SpeechEventType.FILLER_WORD }
             .groupingBy { it.text }
@@ -26,9 +30,13 @@ class BuildSessionSummaryUseCase {
             stats.interruptionCount == 0 ->
                 "No interruptions needed. Try a harder topic next round to push yourself."
 
+            avgInterruptLatencyMs != null && avgInterruptLatencyMs <= FAST_INTERRUPT_LATENCY_MS ->
+                "Your reactions were sharp — you cut in around ${avgInterruptLatencyMs}ms on average. " +
+                        "That's a confident, decisive pace."
+
             topOffender != null && stats.fillerCount >= 3 ->
                 "Your top habit: \"$topOffender\", used $${stats.fillerCount} time(s). " +
-                    "Try replacing it with a short pause instead."
+                        "Try replacing it with a short pause instead."
 
             stats.repetitionCount > 0 ->
                 "You circled back to the same point a few times. Try stating it once, then stop."
@@ -41,6 +49,11 @@ class BuildSessionSummaryUseCase {
             stats = stats,
             topOffender = topOffender,
             closingTip = tip,
+            avgInterruptLatencyMs = avgInterruptLatencyMs,
         )
+    }
+
+    companion object {
+        private const val FAST_INTERRUPT_LATENCY_MS = 400L
     }
 }

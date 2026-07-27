@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -22,6 +23,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SpeechTopic
+import com.androidengineers.agent_quickstart_android.fillerfree.presentation.DailyProgressUiModel
 import com.androidengineers.agent_quickstart_android.fillerfree.presentation.theme.FillerFreeColors
 import com.androidengineers.agent_quickstart_android.fillerfree.presentation.theme.FillerFreeType
 
@@ -33,6 +35,7 @@ fun TopicSelectScreen(
     onTopicSelected: (SpeechTopic) -> Unit,
     onStart: () -> Unit,
     modifier: Modifier = Modifier,
+    dailyProgress: DailyProgressUiModel? = null,
 ) {
     Box(
         modifier = modifier
@@ -52,6 +55,13 @@ fun TopicSelectScreen(
                 color = FillerFreeColors.textSecondary,
                 modifier = Modifier.padding(top = 6.dp, bottom = 24.dp),
             )
+
+            dailyProgress?.let {
+                DailyProgressCard(
+                    progress = it,
+                    modifier = Modifier.padding(bottom = 20.dp),
+                )
+            }
 
             LazyColumn(
                 modifier = Modifier.weight(1f),
@@ -93,6 +103,108 @@ fun TopicSelectScreen(
                     style = FillerFreeType.interruptionLine,
                 )
             }
+        }
+    }
+}
+
+/**
+ * Point 5 (daily improvement memory): a small trend card shown above the
+ * topic list once at least one past session exists locally. Everything
+ * here comes from SessionHistoryRepository (on-device Room storage) via
+ * BuildDailyProgressUseCase — nothing is fetched from the server.
+ */
+@Composable
+private fun DailyProgressCard(
+    progress: DailyProgressUiModel,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(FillerFreeColors.surface)
+            .padding(16.dp),
+    ) {
+        Column {
+            Text(
+                text = "YOUR PROGRESS",
+                style = FillerFreeType.counterLabel,
+                color = FillerFreeColors.textMuted,
+            )
+
+            if (progress.issuesPerMinuteTrend.size >= 2) {
+                TrendSparkline(
+                    values = progress.issuesPerMinuteTrend,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp),
+                )
+            }
+
+            progress.improvementText?.let {
+                Text(
+                    text = it,
+                    style = FillerFreeType.body,
+                    color = FillerFreeColors.textPrimary,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+
+            progress.mostCommonFillerWord?.let {
+                Text(
+                    text = "Most common filler across recent sessions: \"$it\"",
+                    style = FillerFreeType.body,
+                    color = FillerFreeColors.textSecondary,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
+            Text(
+                text = "Based on your last ${progress.sessionCount} session(s), on this device.",
+                style = FillerFreeType.counterLabel,
+                color = FillerFreeColors.textMuted,
+                modifier = Modifier.padding(top = 10.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Minimal Canvas sparkline for issues/minute across recent sessions,
+ * oldest-first (left to right). Deliberately simple — no axes, no
+ * tooltips — this is a glance-level trend indicator, not a full chart.
+ */
+@Composable
+private fun TrendSparkline(
+    values: List<Double>,
+    modifier: Modifier = Modifier,
+) {
+    val maxValue = (values.maxOrNull() ?: 1.0).coerceAtLeast(1.0)
+    androidx.compose.foundation.Canvas(
+        modifier = modifier.height(48.dp),
+    ) {
+        if (values.size < 2) return@Canvas
+        val stepX = size.width / (values.size - 1)
+        val points = values.mapIndexed { index, value ->
+            val x = index * stepX
+            val normalized = (value / maxValue).toFloat().coerceIn(0f, 1f)
+            val y = size.height - (normalized * size.height)
+            androidx.compose.ui.geometry.Offset(x, y)
+        }
+        for (i in 0 until points.size - 1) {
+            drawLine(
+                color = FillerFreeColors.signalGreen,
+                start = points[i],
+                end = points[i + 1],
+                strokeWidth = 4f,
+            )
+        }
+        points.forEach { point ->
+            drawCircle(
+                color = FillerFreeColors.signalGreen,
+                radius = 5f,
+                center = point,
+            )
         }
     }
 }

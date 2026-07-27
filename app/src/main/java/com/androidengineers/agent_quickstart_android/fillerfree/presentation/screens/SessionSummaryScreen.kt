@@ -58,6 +58,14 @@ fun SessionSummaryScreen(
                         SummaryStat(label = "REPEATS", value = summary?.stats?.repetitionCount ?: 0)
                         SummaryStat(label = "CUT-INS", value = summary?.stats?.interruptionCount ?: 0)
                     }
+                    summary?.avgInterruptLatencyMs?.let { avgMs ->
+                        Text(
+                            text = "Avg cut-in speed: ${avgMs}ms",
+                            style = FillerFreeType.counterLabel,
+                            color = FillerFreeColors.textMuted,
+                            modifier = Modifier.padding(top = 14.dp),
+                        )
+                    }
                 }
             }
 
