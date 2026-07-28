@@ -70,19 +70,6 @@ import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.random.Random
 
-/**
- * FINAL PROFESSIONAL STUDIO UI.
- * 
- * Hierarchy:
- * 1. Topic Header + Mic
- * 2. Status Chips (Steady Pace / Eyes)
- * 3. 3 Selectable Coaches (CORE, ENERGY, EYES)
- * 4. Control Toggle
- * 5. CENTER: User Face Box (No overlaps!)
- * 6. Stats Grid
- * 7. Live Scrollable Transcript
- * 8. Finish Button
- */
 @Composable
 fun InSessionScreen(
     modifier: Modifier = Modifier,
@@ -148,7 +135,7 @@ fun InSessionScreen(
                 MicIndicator(isPulsing = !lastEventIsInterruption)
             }
 
-            // LEVEL 1: Status Readouts
+            // STATUS READOUTS
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -157,7 +144,7 @@ fun InSessionScreen(
                 EyeContactChip(state = eyeContactState, modifier = Modifier.weight(1f))
             }
 
-            // LEVEL 2: 3 Selectable Coaches (CORE, ENERGY, EYES)
+            // COACH PERSONAS
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -192,13 +179,13 @@ fun InSessionScreen(
                 )
             }
 
-            // LEVEL 3: Primary Control (Toggle)
+            // TOGGLE (Fixed Visibility)
             EyeContactToggleRow(
                 enabled = eyeContactCoachingEnabled,
                 onToggled = onEyeContactCoachingToggled
             )
 
-            // LEVEL 4: CENTERED USER CAMERA (Shorter, No overlaps)
+            // CENTERED USER CAMERA (Zoom-style)
             Box(
                 modifier = Modifier
                     .size(width = 240.dp, height = 200.dp)
@@ -215,14 +202,13 @@ fun InSessionScreen(
                     modifier = Modifier.fillMaxSize()
                 )
                 
-                // Animated Emojis bound to camera area
                 FloatingReactionLayer(
                     emotion = currentEmotion,
                     modifier = Modifier.fillMaxSize()
                 )
             }
 
-            // LEVEL 5: Key Metrics Grid
+            // KEY METRICS GRID
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -232,10 +218,10 @@ fun InSessionScreen(
                 CounterChip(label = "CUT-INS", value = stats.interruptionCount, accent = true, modifier = Modifier.weight(1f))
             }
 
-            // LEVEL 6: Live Scrollable Transcript
+            // LIVE SCROLLABLE TRANSCRIPT
             TranscriptCaption(text = liveTranscript)
 
-            // LEVEL 7: Finish Action
+            // FINISH ACTION
             Button(
                 onClick = onEndSession,
                 shape = RoundedCornerShape(14.dp),
@@ -252,7 +238,6 @@ fun InSessionScreen(
             Spacer(modifier = Modifier.height(20.dp))
         }
 
-        // FLASH LAYER (Overlay)
         Box(modifier = Modifier.fillMaxSize().background(scrimFlash))
     }
 }
@@ -331,27 +316,18 @@ private fun SelfViewBubble(
                 .joinToString("") { it.take(1).uppercase(Locale.ROOT) }
                 .ifBlank { "AI" }
 
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    modifier = Modifier
-                        .size(80.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF6E56CF)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = initials,
-                        style = FillerFreeType.screenTitle.copy(fontSize = 32.sp, color = Color.White)
-                    )
-                }
-                if (userName.isNotBlank()) {
-                    Text(
-                        text = userName,
-                        style = FillerFreeType.counterLabel,
-                        color = FillerFreeColors.textPrimary,
-                        modifier = Modifier.padding(top = 12.dp)
-                    )
-                }
+            // ONLY INITIALS - Name removed as requested
+            Box(
+                modifier = Modifier
+                    .size(80.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF6E56CF)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = initials,
+                    style = FillerFreeType.screenTitle.copy(fontSize = 32.sp, color = Color.White)
+                )
             }
         }
     }
@@ -397,7 +373,7 @@ private data class FloatingEmoji(val id: Long, val emojiRes: Int, val driftXDp: 
 private fun AnimatedEmoji(emojiRes: Int, driftX: Dp, onFinished: () -> Unit) {
     val progress = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
-        progress.animateTo(1f, animationSpec = tween(1400, easing = LinearEasing))
+        progress.animateTo(1f, animationSpec = tween(1500, easing = LinearEasing))
         onFinished()
     }
     
@@ -443,7 +419,10 @@ private fun EyeContactToggleRow(enabled: Boolean, onToggled: (Boolean) -> Unit) 
             onCheckedChange = onToggled,
             colors = SwitchDefaults.colors(
                 checkedTrackColor = FillerFreeColors.signalGreen,
-                checkedThumbColor = Color.White
+                checkedThumbColor = Color.White,
+                uncheckedThumbColor = Color.White,
+                uncheckedTrackColor = FillerFreeColors.surfaceRaised,
+                uncheckedBorderColor = FillerFreeColors.hairline
             )
         )
     }
@@ -461,7 +440,7 @@ private fun TranscriptCaption(text: String) {
     ) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             Text(
-                text = text.ifBlank { "Explain clearly. AI is listening..." },
+                text = text.ifBlank { "AI Coaches are active. Start explaining..." },
                 style = FillerFreeType.body,
                 color = if (text.isBlank()) FillerFreeColors.textMuted else FillerFreeColors.textPrimary,
             )

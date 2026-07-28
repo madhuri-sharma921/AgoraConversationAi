@@ -67,7 +67,12 @@ class FillerFreeViewModel(
     // rather than re-analyzing the whole turn on every partial update.
     private val analyzedLengthByTurnKey = mutableMapOf<String, Int>()
 
+    private val prefs = application.getSharedPreferences("filler_free_prefs", android.content.Context.MODE_PRIVATE)
+
     init {
+        val savedName = prefs.getString("user_name", "") ?: ""
+        _uiState.update { it.copy(userName = savedName) }
+
         viewModelScope.launch {
             analyticsRepository.stats.collect { stats ->
                 _uiState.update { it.copy(stats = stats) }
@@ -157,6 +162,7 @@ class FillerFreeViewModel(
 
     fun setUserName(name: String) {
         _uiState.update { it.copy(userName = name) }
+        prefs.edit().putString("user_name", name).apply()
     }
 
     /** Called from the InSessionScreen toggle. Does not itself request permission. */
@@ -311,7 +317,20 @@ class FillerFreeViewModel(
         analyticsRepository.reset()
         analyzedLengthByTurnKey.clear()
         _uiState.update {
-            FillerFreeUiState(topics = it.topics)
+            it.copy(
+                screen = FillerFreeUiState.Screen.TOPIC_SELECT,
+                selectedTopic = null,
+                isConnecting = false,
+                isSessionActive = false,
+                liveTranscript = "",
+                recentEvents = emptyList(),
+                stats = com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SessionStats(),
+                summary = null,
+                errorMessage = null,
+                currentEmotion = null,
+                agentState = com.androidengineers.agent_quickstart_android.model.AgentConversationState.IDLE,
+                agentStates = emptyMap()
+            )
         }
     }
 
