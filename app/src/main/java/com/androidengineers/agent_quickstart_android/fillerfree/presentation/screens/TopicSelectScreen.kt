@@ -32,6 +32,9 @@ import com.androidengineers.agent_quickstart_android.fillerfree.presentation.the
 
 /**
  * RE-DESIGNED: Attractive Topic Selection + Name Entry.
+ * Fixes:
+ * 1. CLEAN NAME FIELD: Simple label, no extra text.
+ * 2. START GUARD: Button disabled until name is entered.
  */
 @Composable
 fun TopicSelectScreen(
@@ -62,12 +65,12 @@ fun TopicSelectScreen(
                 modifier = Modifier.padding(top = 16.dp)
             )
             
-            // Name Input
+            // CLEAN NAME INPUT
             Spacer(modifier = Modifier.height(24.dp))
             OutlinedTextField(
                 value = userName,
                 onValueChange = onNameChanged,
-                label = { Text("Your Name (for avatar)", color = FillerFreeColors.textSecondary) },
+                label = { Text("Enter Your Name", color = FillerFreeColors.textSecondary) },
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = FillerFreeType.body,
                 colors = TextFieldDefaults.colors(
@@ -116,9 +119,10 @@ fun TopicSelectScreen(
             Spacer(modifier = Modifier.weight(1f))
             Spacer(modifier = Modifier.height(40.dp))
 
+            // START GUARD: Enabled only if name and topic are selected
             Button(
                 onClick = onStart,
-                enabled = selectedTopic != null,
+                enabled = selectedTopic != null && userName.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
