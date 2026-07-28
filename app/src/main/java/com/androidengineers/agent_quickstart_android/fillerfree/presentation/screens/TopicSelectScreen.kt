@@ -1,41 +1,48 @@
 package com.androidengineers.agent_quickstart_android.fillerfree.presentation.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SpeechTopic
-import com.androidengineers.agent_quickstart_android.fillerfree.presentation.DailyProgressUiModel
 import com.androidengineers.agent_quickstart_android.fillerfree.presentation.theme.FillerFreeColors
 import com.androidengineers.agent_quickstart_android.fillerfree.presentation.theme.FillerFreeType
 
+/**
+ * RE-DESIGNED: Attractive Topic Selection + Name Entry.
+ */
 @Composable
 fun TopicSelectScreen(
+    modifier: Modifier = Modifier,
+    userName: String,
+    onNameChanged: (String) -> Unit,
     topics: List<SpeechTopic>,
     selectedTopic: SpeechTopic?,
     errorMessage: String?,
     onTopicSelected: (SpeechTopic) -> Unit,
     onStart: () -> Unit,
-    modifier: Modifier = Modifier,
-    dailyProgress: DailyProgressUiModel? = null,
 ) {
     Box(
         modifier = modifier
@@ -43,168 +50,89 @@ fun TopicSelectScreen(
             .background(FillerFreeColors.background)
             .padding(24.dp),
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+        ) {
             Text(
                 text = "Filler-Free",
                 style = FillerFreeType.screenTitle,
                 color = FillerFreeColors.textPrimary,
+                modifier = Modifier.padding(top = 16.dp)
             )
+            
+            // Name Input
+            Spacer(modifier = Modifier.height(24.dp))
+            OutlinedTextField(
+                value = userName,
+                onValueChange = onNameChanged,
+                label = { Text("Your Name (for avatar)", color = FillerFreeColors.textSecondary) },
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = FillerFreeType.body,
+                colors = TextFieldDefaults.colors(
+                    focusedTextColor = FillerFreeColors.textPrimary,
+                    unfocusedTextColor = FillerFreeColors.textPrimary,
+                    focusedContainerColor = FillerFreeColors.surface,
+                    unfocusedContainerColor = FillerFreeColors.surface,
+                    focusedLabelColor = FillerFreeColors.signalAmber,
+                    unfocusedLabelColor = FillerFreeColors.textSecondary,
+                    cursorColor = FillerFreeColors.signalAmber,
+                    focusedIndicatorColor = FillerFreeColors.signalAmber,
+                    unfocusedIndicatorColor = FillerFreeColors.surfaceRaised
+                ),
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
             Text(
-                text = "It interrupts you the moment you ramble. Pick a topic.",
-                style = FillerFreeType.body,
-                color = FillerFreeColors.textSecondary,
-                modifier = Modifier.padding(top = 6.dp, bottom = 24.dp),
+                text = "Select Coaching Focus",
+                style = FillerFreeType.interruptionLine,
+                color = FillerFreeColors.textPrimary
             )
 
-            dailyProgress?.let {
-                DailyProgressCard(
-                    progress = it,
-                    modifier = Modifier.padding(bottom = 20.dp),
-                )
-            }
-
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                items(topics) { topic ->
+            Spacer(modifier = Modifier.height(16.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                topics.forEach { topic ->
+                    val isSelected = topic == selectedTopic
                     TopicCard(
                         topic = topic,
-                        isSelected = topic.id == selectedTopic?.id,
-                        onClick = { onTopicSelected(topic) },
+                        isSelected = isSelected,
+                        onClick = { onTopicSelected(topic) }
                     )
                 }
             }
 
-            errorMessage?.let {
+            if (errorMessage != null) {
                 Text(
-                    text = it,
-                    style = FillerFreeType.body,
+                    text = errorMessage,
+                    style = FillerFreeType.counterLabel,
                     color = FillerFreeColors.signalRed,
-                    modifier = Modifier.padding(vertical = 8.dp),
+                    modifier = Modifier.padding(top = 24.dp)
                 )
             }
+
+            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(40.dp))
 
             Button(
                 onClick = onStart,
                 enabled = selectedTopic != null,
+                modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = FillerFreeColors.textPrimary,
-                    contentColor = FillerFreeColors.background,
+                    containerColor = FillerFreeColors.signalAmber,
+                    contentColor = Color(0xFF1C1A17),
                     disabledContainerColor = FillerFreeColors.surfaceRaised,
-                    disabledContentColor = FillerFreeColors.textMuted,
+                    disabledContentColor = FillerFreeColors.textMuted
                 ),
-                contentPadding = PaddingValues(vertical = 16.dp),
-                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(vertical = 16.dp)
             ) {
-                Text(
-                    text = "Start talking",
-                    style = FillerFreeType.interruptionLine,
-                )
+                Text(text = "Enter Coaching Studio", style = FillerFreeType.interruptionLine)
             }
-        }
-    }
-}
-
-/**
- * Point 5 (daily improvement memory): a small trend card shown above the
- * topic list once at least one past session exists locally. Everything
- * here comes from SessionHistoryRepository (on-device Room storage) via
- * BuildDailyProgressUseCase — nothing is fetched from the server.
- */
-@Composable
-private fun DailyProgressCard(
-    progress: DailyProgressUiModel,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(FillerFreeColors.surface)
-            .padding(16.dp),
-    ) {
-        Column {
-            Text(
-                text = "YOUR PROGRESS",
-                style = FillerFreeType.counterLabel,
-                color = FillerFreeColors.textMuted,
-            )
-
-            if (progress.issuesPerMinuteTrend.size >= 2) {
-                TrendSparkline(
-                    values = progress.issuesPerMinuteTrend,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp),
-                )
-            }
-
-            progress.improvementText?.let {
-                Text(
-                    text = it,
-                    style = FillerFreeType.body,
-                    color = FillerFreeColors.textPrimary,
-                    modifier = Modifier.padding(top = 10.dp),
-                )
-            }
-
-            progress.mostCommonFillerWord?.let {
-                Text(
-                    text = "Most common filler across recent sessions: \"$it\"",
-                    style = FillerFreeType.body,
-                    color = FillerFreeColors.textSecondary,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-
-            Text(
-                text = "Based on your last ${progress.sessionCount} session(s), on this device.",
-                style = FillerFreeType.counterLabel,
-                color = FillerFreeColors.textMuted,
-                modifier = Modifier.padding(top = 10.dp),
-            )
-        }
-    }
-}
-
-/**
- * Minimal Canvas sparkline for issues/minute across recent sessions,
- * oldest-first (left to right). Deliberately simple — no axes, no
- * tooltips — this is a glance-level trend indicator, not a full chart.
- */
-@Composable
-private fun TrendSparkline(
-    values: List<Double>,
-    modifier: Modifier = Modifier,
-) {
-    val maxValue = (values.maxOrNull() ?: 1.0).coerceAtLeast(1.0)
-    androidx.compose.foundation.Canvas(
-        modifier = modifier.height(48.dp),
-    ) {
-        if (values.size < 2) return@Canvas
-        val stepX = size.width / (values.size - 1)
-        val points = values.mapIndexed { index, value ->
-            val x = index * stepX
-            val normalized = (value / maxValue).toFloat().coerceIn(0f, 1f)
-            val y = size.height - (normalized * size.height)
-            androidx.compose.ui.geometry.Offset(x, y)
-        }
-        for (i in 0 until points.size - 1) {
-            drawLine(
-                color = FillerFreeColors.signalGreen,
-                start = points[i],
-                end = points[i + 1],
-                strokeWidth = 4f,
-            )
-        }
-        points.forEach { point ->
-            drawCircle(
-                color = FillerFreeColors.signalGreen,
-                radius = 5f,
-                center = point,
-            )
+            
+            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 }
@@ -218,22 +146,27 @@ private fun TopicCard(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(if (isSelected) FillerFreeColors.surfaceRaised else FillerFreeColors.surface)
+            .border(
+                width = 2.dp,
+                color = if (isSelected) FillerFreeColors.signalAmber else Color.Transparent,
+                shape = RoundedCornerShape(16.dp)
+            )
             .clickable(onClick = onClick)
-            .padding(16.dp),
+            .padding(20.dp)
     ) {
         Column {
             Text(
                 text = topic.title,
                 style = FillerFreeType.interruptionLine,
-                color = if (isSelected) FillerFreeColors.signalAmber else FillerFreeColors.textPrimary,
+                color = if (isSelected) FillerFreeColors.signalAmber else FillerFreeColors.textPrimary
             )
             Text(
                 text = topic.description,
-                style = FillerFreeType.body,
+                style = FillerFreeType.body.copy(fontSize = 14.sp),
                 color = FillerFreeColors.textSecondary,
-                modifier = Modifier.padding(top = 4.dp),
+                modifier = Modifier.padding(top = 4.dp)
             )
         }
     }

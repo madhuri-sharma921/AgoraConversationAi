@@ -1,3 +1,8 @@
+# EDIT
+# PROJECT PATH: gradle/libs.versions.toml
+# Replace the ENTIRE existing file content with the below.
+######################################################################
+
 [versions]
 agp = "9.1.1"
 agoraRtc = "4.3.2"

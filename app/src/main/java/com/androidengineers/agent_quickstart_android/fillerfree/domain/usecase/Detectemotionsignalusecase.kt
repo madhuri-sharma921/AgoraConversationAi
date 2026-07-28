@@ -1,58 +1,82 @@
 package com.androidengineers.agent_quickstart_android.fillerfree.domain.usecase
 
-import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.AttentionLabel
-import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.AttentionSignal
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.EmotionLabel
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.EmotionSignal
 
 /**
- * Pure function, same style as DetectEmotionSignalUseCase: takes raw
- * per-frame face-detection output and turns it into a stable
- * [AttentionSignal], smoothing over single-frame noise so a momentary
- * blink or fast head-turn doesn't flip the label every 30ms.
+ * Pure function, same style as AnalyzeTranscriptUseCase: no Android/Agora
+ * dependencies, fully unit testable. Derives a coarse emotion label from
+ * timing + filler-density signals already available from the transcript
+ * stream (word counts per chunk, chunk timestamps, recent filler counts).
  *
- * Not an ML model itself — ML Kit does the actual face/pose detection;
- * this just classifies its output into a coaching-relevant label and
- * tracks how long the user has held that state.
+ * This is a rules engine on purpose, not an ML model — cheap, explainable,
+ * and good enough for real-time coaching feedback.
  */
-class DetectAttentionSignalUseCase {
+class DetectEmotionSignalUseCase {
 
-    private var currentLabel: AttentionLabel = AttentionLabel.UNKNOWN
-    private var labelStartedAtMs: Long = 0L
+    private data class ChunkRecord(val wordCount: Int, val timestampMs: Long, val fillerCount: Int)
 
-    /**
-     * @param headYawDegrees ML Kit's Face.headEulerAngleY (positive = turned
-     *   toward the device's right from the camera's point of view), or null
-     *   if no face was detected this frame.
-     * @param timestampMs frame timestamp
-     */
-    operator fun invoke(headYawDegrees: Float?, timestampMs: Long): AttentionSignal {
-        val rawLabel = when {
-            headYawDegrees == null -> AttentionLabel.NO_FACE_DETECTED
-            kotlin.math.abs(headYawDegrees) <= LOOKING_AWAY_YAW_THRESHOLD_DEGREES -> AttentionLabel.LOOKING_AT_CAMERA
-            else -> AttentionLabel.LOOKING_AWAY
+    private val recentChunks = ArrayDeque<ChunkRecord>()
+
+    operator fun invoke(
+        chunkText: String,
+        chunkFillerCount: Int,
+        timestampMs: Long,
+    ): EmotionSignal {
+        val wordCount = chunkText.split(Regex("\\s+")).count { it.isNotBlank() }
+        recentChunks.addLast(ChunkRecord(wordCount, timestampMs, chunkFillerCount))
+        while (recentChunks.size > MAX_WINDOW) recentChunks.removeFirst()
+
+        val windowStartMs = recentChunks.first().timestampMs
+        val windowDurationMs = (timestampMs - windowStartMs).coerceAtLeast(1L)
+        val totalWords = recentChunks.sumOf { it.wordCount }
+        val wpm = (totalWords.toDouble() / windowDurationMs) * 60_000.0
+
+        val pauses = recentChunks.zipWithNext { a, b -> b.timestampMs - a.timestampMs }
+        val avgPauseMs = if (pauses.isNotEmpty()) pauses.average().toLong() else 0L
+
+        val half = recentChunks.size / 2
+        val fillerTrend = if (recentChunks.size >= 4) {
+            val firstHalfFillers = recentChunks.take(half).sumOf { it.fillerCount }
+            val secondHalfFillers = recentChunks.takeLast(recentChunks.size - half).sumOf { it.fillerCount }
+            (secondHalfFillers - firstHalfFillers).toDouble()
+        } else {
+            0.0
         }
 
-        if (rawLabel != currentLabel) {
-            currentLabel = rawLabel
-            labelStartedAtMs = timestampMs
-        }
+        val label = classify(wpm, fillerTrend, avgPauseMs)
 
-        return AttentionSignal(
-            label = currentLabel,
-            headYawDegrees = headYawDegrees,
-            continuousDurationMs = (timestampMs - labelStartedAtMs).coerceAtLeast(0L),
+        return EmotionSignal(
+            label = label,
+            wordsPerMinute = wpm,
+            fillerTrend = fillerTrend,
+            avgPauseMs = avgPauseMs,
             computedAtMs = timestampMs,
         )
     }
 
     fun reset() {
-        currentLabel = AttentionLabel.UNKNOWN
-        labelStartedAtMs = 0L
+        recentChunks.clear()
+    }
+
+    private fun classify(wpm: Double, fillerTrend: Double, avgPauseMs: Long): EmotionLabel {
+        if (recentChunks.size < MIN_SAMPLES_FOR_LABEL) return EmotionLabel.UNKNOWN
+        return when {
+            wpm > NERVOUS_WPM_THRESHOLD && fillerTrend > 0 -> EmotionLabel.NERVOUS
+            wpm > EXCITED_WPM_THRESHOLD && fillerTrend <= 0 -> EmotionLabel.EXCITED
+            avgPauseMs > FRUSTRATED_PAUSE_MS_THRESHOLD && fillerTrend > 0 -> EmotionLabel.FRUSTRATED
+            wpm in CONFIDENT_WPM_RANGE && fillerTrend <= 0 -> EmotionLabel.CONFIDENT
+            else -> EmotionLabel.FLAT
+        }
     }
 
     companion object {
-        // Beyond this yaw, the user is turned far enough from the camera
-        // that they're very unlikely to be making eye contact with whoever
-        // they're practicing in front of (an interviewer, an audience, etc).
-        private const val LOOKING_AWAY_YAW_THRESHOLD_DEGREES = 25f
+        private const val MAX_WINDOW = 8 // Reduced from 12 for faster response
+        private const val MIN_SAMPLES_FOR_LABEL = 2 // Reduced from 4 for faster initial read
+
+        private const val NERVOUS_WPM_THRESHOLD = 160.0 // Slightly lower for easier detection
+        private const val EXCITED_WPM_THRESHOLD = 150.0 // Slightly lower for easier detection
+        private const val FRUSTRATED_PAUSE_MS_THRESHOLD = 2_500L // Lowered from 3.5s
+        private val CONFIDENT_WPM_RANGE = 100.0..140.0 // Slightly wider range
     }
 }

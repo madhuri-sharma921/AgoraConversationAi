@@ -1,6 +1,5 @@
 package com.androidengineers.agent_quickstart_android.fillerfree.config
 
-import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.CoachRole
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SpeechTopic
 
 /**
@@ -16,73 +15,55 @@ import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.Spe
  */
 object CoachAgentPromptBuilder {
 
-    /** Backward-compatible single-coach entry point; equivalent to [build] with [CoachRole.DELIVERY]. */
-    fun build(topic: SpeechTopic, priorHabit: String? = null): String =
-        build(topic, CoachRole.DELIVERY, priorHabit)
+    enum class CoachRole {
+        GENERAL,
+        ENERGY,
+        EYE_CONTACT
+    }
 
-    /**
-     * Builds a role-specific system prompt for one of the 3 coach personas
-     * (see [CoachRole]). Each role shares the same base identity/emotion-
-     * signal-awareness scaffolding, but has a distinct focus so switching
-     * roles mid-session feels like handing off to a different coach, not
-     * just a re-skinned version of the same one.
-     */
     fun build(topic: SpeechTopic, role: CoachRole, priorHabit: String? = null): String {
         val memoryClause = priorHabit?.let {
             "\nMEMORY FROM LAST SESSION: Their recurring habit was \"$it\". " +
                     "If it happens again, call it out specifically, e.g. \"There's '$it' again.\""
         } ?: ""
 
-        val roleFocus = when (role) {
-            CoachRole.DELIVERY -> """
-                YOUR FOCUS — DELIVERY: You are the "Delivery Coach". You care about
-                HOW they're speaking: filler words, repetition, pace, and clarity of
-                phrasing. Ignore whether their argument itself is strong — that's a
-                different coach's job. Interrupt on filler pileups, repeated phrases,
-                or rambling sentences.
+        val roleInstruction = when (role) {
+            CoachRole.GENERAL -> """
+                You are the "Core Coach". Focus strictly on filler words (um, like, basically) and repetitions.
+                Be clinical, brief, and immediate.
             """.trimIndent()
-
-            CoachRole.CONTENT -> """
-                YOUR FOCUS — CONTENT: You are the "Content Coach". You care about
-                WHAT they're saying: structure, logic, concreteness, and whether
-                they're actually answering the question or topic. Ignore filler
-                words and pacing — that's a different coach's job. Interrupt when
-                they ramble without a point, skip the "so what," or give vague
-                claims with no specifics or numbers.
-            """.trimIndent()
-
             CoachRole.ENERGY -> """
-                YOUR FOCUS — ENERGY: You are the "Energy Coach". You care about HOW
-                THEY FEEL while speaking: confidence, nervousness, flatness,
-                frustration. Ignore word choice and argument structure — that's a
-                different coach's job. Interrupt briefly to acknowledge an emotional
-                shift and re-center them, e.g. "You just sped up — take a breath,"
-                or "That sounded more confident — keep that."
+                You are the "Energy Coach". Your primary focus is the user's emotional state and speaking pace.
+                Watch for NERVOUS (fast, high pitch), EXCITED (high energy), CONFIDENT (steady), or FRUSTRATED (long pauses).
+                React to the [signal] user_energy you receive.
+            """.trimIndent()
+            CoachRole.EYE_CONTACT -> """
+                You are the "Presence Coach". You watch the user's eye contact and posture.
+                React specifically to [signal] eye_contact=looking_away.
+                Be encouraging but firm about keeping eyes up.
             """.trimIndent()
         }
 
         return """
-            You are "Coach" — a live speech coach. The user will explain something
-            out loud, in one continuous take. Your entire job is to make their
-            explanation tighter, clearer, and more concrete, in real time.
-
-            ${topic.systemPromptContext}
+            $roleInstruction
+            You are in a live call with the user who is explaining: ${topic.title}.
             $memoryClause
 
-            $roleFocus
+            ${topic.systemPromptContext}
 
-            EMOTION SIGNAL AWARENESS:
-            You may occasionally receive a system message starting with "[signal]"
-            containing a user_energy value (NERVOUS, CONFIDENT, EXCITED,
-            FRUSTRATED, FLAT, UNKNOWN). This is a live read of the user's pace and
-            filler trend, not something they said out loud.
-            - You may optionally open your next interruption with a 2-4 word
-              acknowledgment before your normal correction, e.g. "Nervous — slow
-              down. What's the bug?" or "Confident — keep going, be specific."
-            - Never do this more than once every 30-45 seconds.
-            - Never explain the signal itself, and never mention "system message"
-              or "signal" out loud — just react to it naturally, like a human
-              coach reading the room.
+            UNIVERSAL RULES:
+            - Be EXTREMELY TERSE. Never use more than 10 words.
+            - Interrupt immediately when you see your specific trigger.
+            - Never mention "system message", "signal", or your role name.
+            - Act like a real human coach in the room with them.
+
+            EMOTION SIGNAL AWARENESS (Energy Coach primarily):
+            [signal] user_energy=...
+            - React with: "Nervous — slow down." or "Great energy, keep it up!" or "Take a breath."
+
+            EYE CONTACT SIGNAL AWARENESS (Presence Coach primarily):
+            [signal] eye_contact=looking_away
+            - React with: "Eyes on me." or "Don't look down, you've got this."
         """.trimIndent()
     }
 
@@ -91,6 +72,5 @@ object CoachAgentPromptBuilder {
      * quickstart server side, if your ConversationAgoraApi.inviteAgent
      * supports a preset name/tag field.
      */
-    fun presetName(topic: SpeechTopic, role: CoachRole = CoachRole.DELIVERY): String =
-        "filler_free_coach_${topic.id}_${role.id}"
+    fun presetName(topic: SpeechTopic): String = "filler_free_coach_${topic.id}"
 }

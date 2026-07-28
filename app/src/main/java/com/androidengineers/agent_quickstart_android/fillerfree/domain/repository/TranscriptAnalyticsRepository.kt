@@ -4,6 +4,7 @@ import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.Emo
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SessionStats
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SessionSummary
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SpeechEvent
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.VoiceProsodySample
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -24,17 +25,16 @@ interface TranscriptAnalyticsRepository {
     /** Feed a new transcript chunk (user speech) into the analyzer. */
     fun onUserTranscriptChunk(text: String, timestampMs: Long)
 
+    /**
+     * Feed a new raw-audio prosody sample (mic loudness + pitch, no
+     * transcript involved) into the analyzer. When available, this takes
+     * priority over the text-timing proxy for [emotionSignal] — see
+     * TranscriptAnalyticsRepositoryImpl for the blending rule.
+     */
+    fun onVoiceProsodySample(sample: VoiceProsodySample)
+
     /** Feed a new agent transcript chunk in, used to detect interruptions. */
     fun onAgentTranscriptChunk(text: String, timestampMs: Long, userWasSpeaking: Boolean)
-
-    /**
-     * Records a real, measured interrupt latency (ms) for the most recent
-     * barge-in, sourced from AgoraConversationSessionManager's actual
-     * "user spoke -> agent stopped" timing rather than transcript-chunk
-     * heuristics. Updates the latest AGENT_INTERRUPTION event's latencyMs
-     * and SessionStats.lastInterruptionLatencyMs.
-     */
-    fun recordInterruptLatency(latencyMs: Long, timestampMs: Long)
 
     /** Reset all counters for a new session. */
     fun reset()

@@ -41,44 +41,50 @@ class MainActivity : ComponentActivity() {
             AgentquickstartandroidTheme(darkTheme = systemDarkTheme) {
                 val context = LocalContext.current
                 val currentViewModel by rememberUpdatedState(viewModel)
+
+                fun hasPermission(permission: String): Boolean =
+                    ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
+                // Mic is required to start a session at all; camera is optional
+                // (eye-contact coaching degrades to disabled, not a hard failure,
+                // if the user denies it — see FillerFreeViewModel.setHasCameraPermission).
                 val permissionLauncher = rememberLauncherForActivityResult(
-                    contract = ActivityResultContracts.RequestPermission()
-                ) { granted ->
-                    if (granted) {
+                    contract = ActivityResultContracts.RequestMultiplePermissions()
+                ) { results ->
+                    currentViewModel.setHasCameraPermission(
+                        results[Manifest.permission.CAMERA] ?: hasPermission(Manifest.permission.CAMERA)
+                    )
+                    val micGranted = results[Manifest.permission.RECORD_AUDIO]
+                        ?: hasPermission(Manifest.permission.RECORD_AUDIO)
+                    if (micGranted) {
                         currentViewModel.startSession()
                     }
                 }
 
-                // Point 4 (visual coaching): CAMERA is a separate, optional
-                // permission from RECORD_AUDIO — a session runs fine without
-                // it. If denied, visual coaching simply never turns on;
-                // nothing else about the session is affected. The user just
-                // re-taps the toggle once permission is granted.
-                val cameraPermissionLauncher = rememberLauncherForActivityResult(
-                    contract = ActivityResultContracts.RequestPermission()
-                ) { /* no-op: see FillerFreeScreen's hasCameraPermission() re-check on next toggle tap */ }
+                LaunchedEffect(Unit) {
+                    currentViewModel.setHasCameraPermission(hasPermission(Manifest.permission.CAMERA))
+                }
 
                 FillerFreeScreen(
                     viewModel = viewModel,
                     onRequestStart = {
-                        val granted = ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.RECORD_AUDIO,
-                        ) == PackageManager.PERMISSION_GRANTED
-                        if (granted) {
+                        val micGranted = hasPermission(Manifest.permission.RECORD_AUDIO)
+                        val cameraGranted = hasPermission(Manifest.permission.CAMERA)
+                        currentViewModel.setHasCameraPermission(cameraGranted)
+
+                        if (micGranted) {
                             currentViewModel.startSession()
+                            if (!cameraGranted) {
+                                permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+                            }
                         } else {
-                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            val toRequest = if (cameraGranted) {
+                                arrayOf(Manifest.permission.RECORD_AUDIO)
+                            } else {
+                                arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+                            }
+                            permissionLauncher.launch(toRequest)
                         }
-                    },
-                    hasCameraPermission = {
-                        ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.CAMERA,
-                        ) == PackageManager.PERMISSION_GRANTED
-                    },
-                    onRequestCameraPermission = {
-                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     },
                 )
             }

@@ -9,6 +9,7 @@ import com.androidengineers.agent_quickstart_android.model.AgoraTokenBundle
 import com.androidengineers.agent_quickstart_android.model.RenewalTokens
 import com.androidengineers.agent_quickstart_android.model.SessionIssue
 import com.androidengineers.agent_quickstart_android.model.SessionSnapshot
+import com.androidengineers.agent_quickstart_android.fillerfree.audio.VoiceProsodyAnalyzer
 import io.agora.rtc2.ChannelMediaOptions
 import io.agora.rtc2.Constants
 import io.agora.rtc2.IRtcEngineEventHandler
@@ -67,6 +68,11 @@ class AgoraConversationSessionManager(
 
     val snapshot: StateFlow<SessionSnapshot> = _snapshot.asStateFlow()
 
+    // Owned here (not in AudioSessionManager) because it's registered
+    // directly on the RtcEngine as a raw-frame observer — a parallel,
+    // read-only tap on the mic, not part of the call's audio routing.
+    val voiceProsodyAnalyzer = VoiceProsodyAnalyzer()
+
     private var rtcEngine: RtcEngine? = null
     private var rtmClient: RtmClient? = null
     private var currentChannel: String? = null
@@ -76,39 +82,10 @@ class AgoraConversationSessionManager(
     private var renewTokensProvider: (suspend (String, Int, String) -> RenewalTokens)? = null
     private var joinDeferred: CompletableDeferred<Int>? = null
     private var activeAgentId: String? = null
-
-    // Multi-agent tracking (point 3: multiple AI coaches). Only one coach's
-    // agent is ever actually joined/speaking in the RTC channel at a time —
-    // see CoachRole.kt and server/app/routes.py switch_role for why (the
-    // ConvoAI SDK has no native mute). This map remembers every role that
-    // has EVER had a live agent_id this session, so switching back to a
-    // role the server still has a slot for can resume it; activeCoachRole
-    // is whichever one currently has the floor.
-    private val agentIdByRole = mutableMapOf<String, String>()
-    private var activeCoachRole: String? = null
-
     private var currentRtmUserId: String? = null
     private var currentAgentTurnId: Long? = null
     private var interruptRequestedTurnId: Long? = null
     private var lastInterruptRequestAtMs: Long = 0L
-
-    // Real (not proxy) interrupt latency tracking: set the moment we ask the
-    // agent to stop because the user started speaking over it, cleared once
-    // measured against the agent's next non-SPEAKING state transition. This
-    // is the actual "user spoke -> agent stopped talking" wall-clock gap,
-    // as opposed to FillerFreeViewModel's old userWasSpeaking heuristic.
-    private var interruptRequestedAtMsForLatency: Long? = null
-    private var onInterruptLatencyMeasured: ((Long) -> Unit)? = null
-
-    /**
-     * Registers a callback invoked with the measured interrupt latency (ms)
-     * each time a user-triggered barge-in completes, i.e. the elapsed time
-     * between [requestAgentInterruptFromUserSpeech] firing and the agent's
-     * state next leaving SPEAKING. Pass null to unregister.
-     */
-    fun setOnInterruptLatencyMeasured(listener: ((Long) -> Unit)?) {
-        onInterruptLatencyMeasured = listener
-    }
 
     init {
         scope.launch {
@@ -140,8 +117,6 @@ class AgoraConversationSessionManager(
         transcriptAssembler.reset()
         micRequestedEnabled = true
         activeAgentId = null
-        agentIdByRole.clear()
-        activeCoachRole = null
         currentRtmUserId = bootstrap.rtmUserId
         currentAgentTurnId = null
         interruptRequestedTurnId = null
@@ -179,13 +154,10 @@ class AgoraConversationSessionManager(
         currentAgentRtcUid = 0
         micRequestedEnabled = true
         activeAgentId = null
-        agentIdByRole.clear()
-        activeCoachRole = null
         currentRtmUserId = null
         currentAgentTurnId = null
         interruptRequestedTurnId = null
         lastInterruptRequestAtMs = 0L
-        interruptRequestedAtMsForLatency = null
         audioSessionManager.stop()
 
         val channel = currentChannel
@@ -208,6 +180,7 @@ class AgoraConversationSessionManager(
         }
         rtcEngine = null
         runCatching { RtcEngine.destroy() }
+        voiceProsodyAnalyzer.reset()
 
         if (resetSnapshot) {
             _snapshot.value = SessionSnapshot()
@@ -228,28 +201,6 @@ class AgoraConversationSessionManager(
     fun setActiveAgentId(agentId: String?) {
         activeAgentId = agentId
     }
-
-    /**
-     * Registers which coach role currently has the floor, its agent_id, and
-     * its RTC UID (each role gets a distinct UID server-side — see
-     * Settings.rtc_uid_for_role in config.py — since Agora RTC identifies
-     * remote streams by UID). Call this after a successful join or
-     * switch-role response. Updates [currentAgentRtcUid] so RTC join/leave
-     * presence detection (onUserJoined/onUserOffline) tracks the right UID.
-     */
-    fun setCoachAgent(role: String, agentId: String, rtcUid: Int) {
-        agentIdByRole[role] = agentId
-        activeCoachRole = role
-        activeAgentId = agentId
-        currentAgentRtcUid = rtcUid
-        updateSnapshot { it.copy(isAgentRtcConnected = false) }
-    }
-
-    /** The coach role currently holding the floor, or null if none has joined yet. */
-    fun activeCoachRole(): String? = activeCoachRole
-
-    /** agent_id already seen for [role] this session, if the server previously reported one. */
-    fun agentIdForRole(role: String): String? = agentIdByRole[role]
 
     private suspend fun ensureRtcEngine(appId: String) = withContext(Dispatchers.Main.immediate) {
         if (rtcEngine != null) {
@@ -285,6 +236,10 @@ class AgoraConversationSessionManager(
             ),
         )
         audioSessionManager.configureRtcEngine(engine)
+        runRtcBestEffort(
+            operation = "registerAudioFrameObserver",
+            result = engine.registerAudioFrameObserver(voiceProsodyAnalyzer),
+        )
         rtcEngine = engine
     }
 
@@ -443,13 +398,6 @@ class AgoraConversationSessionManager(
                 interruptRequestedTurnId = null
                 audioSessionManager.setMicrophoneEnabled(micRequestedEnabled)
                 Log.i(TAG, "Agent ready; microphone restored to requested state")
-
-                interruptRequestedAtMsForLatency?.let { requestedAtMs ->
-                    val latencyMs = (timestampMillis - requestedAtMs).coerceAtLeast(0L)
-                    interruptRequestedAtMsForLatency = null
-                    Log.i(TAG, "interrupt_latency_measured_ms=$latencyMs")
-                    onInterruptLatencyMeasured?.invoke(latencyMs)
-                }
             }
 
             else -> Unit
@@ -638,7 +586,6 @@ class AgoraConversationSessionManager(
 
         interruptRequestedTurnId = turnId
         lastInterruptRequestAtMs = now
-        interruptRequestedAtMsForLatency = now
         scope.launch {
             runCatching {
                 repository.interruptConversation(

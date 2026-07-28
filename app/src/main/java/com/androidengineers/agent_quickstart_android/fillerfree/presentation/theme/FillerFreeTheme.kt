@@ -14,18 +14,18 @@ import androidx.compose.ui.unit.sp
  * an interruption is a hard, brief flash of amber, not a cute animation.
  */
 object FillerFreeColors {
-    val background = Color(0xFF0E0F11)      // near-black, not pure black
-    val surface = Color(0xFF17181B)
-    val surfaceRaised = Color(0xFF1F2124)
-    val hairline = Color(0xFF2B2D31)
+    val background = Color(0xFF1C1A17)      // Warm dark brownish-black
+    val surface = Color(0xFF26231F)         // Warm dark brown
+    val surfaceRaised = Color(0xFF332F2A)   // Lighter warm brown
+    val hairline = Color(0xFF403C35)
 
-    val textPrimary = Color(0xFFF2F1EE)      // warm off-white, not pure white
-    val textSecondary = Color(0xFF9A9CA3)
-    val textMuted = Color(0xFF6B6D73)
+    val textPrimary = Color(0xFFF2EBE1)      // Warm off-white
+    val textSecondary = Color(0xFFB5AE9F)    // Muted warm beige
+    val textMuted = Color(0xFF7A7368)        // Darker warm beige
 
-    val signalAmber = Color(0xFFE0A63A)      // interruption flash — sharp, not alarming red
-    val signalGreen = Color(0xFF5FBF8A)       // clean-run positive state
-    val signalRed = Color(0xFFD9564A)         // used sparingly: repetition warning only
+    val signalAmber = Color(0xFFE6A23C)      // Vibrant warm amber
+    val signalGreen = Color(0xFF67C23A)       // Positive green
+    val signalRed = Color(0xFFF56C6C)         // Destructive red
 }
 
 object FillerFreeType {

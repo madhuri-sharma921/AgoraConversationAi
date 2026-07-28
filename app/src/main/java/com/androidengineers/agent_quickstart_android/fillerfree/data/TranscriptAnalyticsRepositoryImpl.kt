@@ -1,14 +1,17 @@
 package com.androidengineers.agent_quickstart_android.fillerfree.data
 
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.EmotionLabel
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.EmotionSignal
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SessionStats
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SessionSummary
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SpeechEvent
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SpeechEventType
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.VoiceProsodySample
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.repository.TranscriptAnalyticsRepository
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.usecase.AnalyzeTranscriptUseCase
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.usecase.BuildSessionSummaryUseCase
-
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.usecase.DetectEmotionSignalUseCase
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.usecase.DetectVoiceEmotionUseCase
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -27,7 +30,8 @@ import kotlinx.coroutines.flow.filterNotNull
 class TranscriptAnalyticsRepositoryImpl(
     private val analyzeTranscript: AnalyzeTranscriptUseCase = AnalyzeTranscriptUseCase(),
     private val buildSummary: BuildSessionSummaryUseCase = BuildSessionSummaryUseCase(),
-   // private val detectEmotionSignal: DetectEmotionSignalUseCase = DetectEmotionSignalUseCase(),
+    private val detectEmotionSignal: DetectEmotionSignalUseCase = DetectEmotionSignalUseCase(),
+    private val detectVoiceEmotion: DetectVoiceEmotionUseCase = DetectVoiceEmotionUseCase(),
 ) : TranscriptAnalyticsRepository {
 
     private val _events = MutableSharedFlow<SpeechEvent>(replay = 0, extraBufferCapacity = 32)
@@ -40,10 +44,39 @@ class TranscriptAnalyticsRepositoryImpl(
     override val emotionSignal: Flow<EmotionSignal> = _emotionSignal.asStateFlow().filterNotNull()
 
     private val eventHistory = mutableListOf<SpeechEvent>()
-    private val interruptLatenciesMs = mutableListOf<Long>()
     private val recentSentences = ArrayDeque<String>()
     private val sentenceBuffer = StringBuilder()
     private var sessionStartMs: Long? = null
+
+    // Latest real-audio-derived read. Voice takes priority over the
+    // text-timing proxy whenever it has a confident (non-UNKNOWN) label —
+    // see onUserTranscriptChunk for how the two are blended.
+    private var latestVoiceLabel: EmotionLabel = EmotionLabel.UNKNOWN
+    private var latestVoiceLabelAtMs: Long = 0L
+
+    override fun onVoiceProsodySample(sample: VoiceProsodySample) {
+        latestVoiceLabel = detectVoiceEmotion(sample)
+        latestVoiceLabelAtMs = sample.timestampMs
+
+        // Emit immediately from the voice read alone — this is the fix for
+        // "shows late/rarely": voice samples arrive on a steady ~300ms
+        // cadence regardless of when/whether STT decides to push a
+        // transcript delta, so the UI no longer has to wait on transcript
+        // chunk timing to get an update. wordsPerMinute/fillerTrend/
+        // avgPauseMs stay at their last known text-derived values (or
+        // zero, before any transcript has arrived) since this path has no
+        // transcript context of its own.
+        if (latestVoiceLabel != EmotionLabel.UNKNOWN) {
+            val previous = _emotionSignal.value
+            _emotionSignal.value = EmotionSignal(
+                label = latestVoiceLabel,
+                wordsPerMinute = previous?.wordsPerMinute ?: 0.0,
+                fillerTrend = previous?.fillerTrend ?: 0.0,
+                avgPauseMs = previous?.avgPauseMs ?: 0L,
+                computedAtMs = sample.timestampMs,
+            )
+        }
+    }
 
     override fun onUserTranscriptChunk(text: String, timestampMs: Long) {
         if (sessionStartMs == null) sessionStartMs = timestampMs
@@ -77,11 +110,24 @@ class TranscriptAnalyticsRepositoryImpl(
             )
         }
 
-//        _emotionSignal.value = detectEmotionSignal(
-//            chunkText = text,
-//            chunkFillerCount = fillerCountThisChunk,
-//            timestampMs = timestampMs,
-//        )
+        val textSignal = detectEmotionSignal(
+            chunkText = text,
+            chunkFillerCount = fillerCountThisChunk,
+            timestampMs = timestampMs,
+        )
+
+        // Voice wins when it has a fresh (< 2s old) confident read — real
+        // prosody is the higher-fidelity signal the user actually asked
+        // for; the text-timing proxy is the fallback for when the voice
+        // pipeline hasn't accumulated enough samples yet (session start,
+        // or a stretch of silence with no pitch to read).
+        val voiceIsFreshAndConfident = latestVoiceLabel != EmotionLabel.UNKNOWN &&
+                (timestampMs - latestVoiceLabelAtMs) < VOICE_SIGNAL_FRESHNESS_MS
+        _emotionSignal.value = if (voiceIsFreshAndConfident) {
+            textSignal.copy(label = latestVoiceLabel)
+        } else {
+            textSignal
+        }
     }
 
     override fun onAgentTranscriptChunk(text: String, timestampMs: Long, userWasSpeaking: Boolean) {
@@ -101,37 +147,20 @@ class TranscriptAnalyticsRepositoryImpl(
         }
     }
 
-    override fun recordInterruptLatency(latencyMs: Long, timestampMs: Long) {
-        interruptLatenciesMs += latencyMs
-
-        // Backfill the most recent AGENT_INTERRUPTION event with the real
-        // measured latency, replacing the null placeholder set at emit time.
-        val lastInterruptionIndex = eventHistory.indexOfLast { it.type == SpeechEventType.AGENT_INTERRUPTION }
-        if (lastInterruptionIndex >= 0) {
-            eventHistory[lastInterruptionIndex] = eventHistory[lastInterruptionIndex].copy(latencyMs = latencyMs)
-        }
-
-        _stats.update(sessionStartMs, timestampMs) { current ->
-            current.copy(lastInterruptionLatencyMs = latencyMs)
-        }
-    }
-
     override fun reset() {
         eventHistory.clear()
-        interruptLatenciesMs.clear()
         recentSentences.clear()
         sentenceBuffer.clear()
         sessionStartMs = null
         _stats.value = SessionStats()
         _emotionSignal.value = null
-        //detectEmotionSignal.reset()
+        detectEmotionSignal.reset()
+        detectVoiceEmotion.reset()
+        latestVoiceLabel = EmotionLabel.UNKNOWN
+        latestVoiceLabelAtMs = 0L
     }
 
-    override fun buildSummary(): SessionSummary = buildSummary(
-        stats = _stats.value,
-        events = eventHistory.toList(),
-        avgInterruptLatencyMs = interruptLatenciesMs.takeIf { it.isNotEmpty() }?.average()?.toLong(),
-    )
+    override fun buildSummary(): SessionSummary = buildSummary(_stats.value, eventHistory.toList())
 
     private fun MutableStateFlow<SessionStats>.update(
         startMs: Long?,
@@ -144,5 +173,6 @@ class TranscriptAnalyticsRepositoryImpl(
 
     companion object {
         private const val MAX_RECENT_SENTENCES = 5
+        private const val VOICE_SIGNAL_FRESHNESS_MS = 2_000L
     }
 }

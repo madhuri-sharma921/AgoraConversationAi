@@ -1,10 +1,11 @@
+
 import java.util.Properties
 
-plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.ksp)
-}
+        plugins {
+            alias(libs.plugins.android.application)
+            alias(libs.plugins.kotlin.compose)
+            alias(libs.plugins.ksp)
+        }
 
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
@@ -96,6 +97,14 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.mlkit.face.detection)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.robolectric)
@@ -106,18 +115,4 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
-
-    // Point 4 (visual coaching): on-device camera + face detection, local
-    // only — no video is ever streamed anywhere, see docs/visual-coaching.md.
-    implementation(libs.androidx.camera.core)
-    implementation(libs.androidx.camera.camera2)
-    implementation(libs.androidx.camera.lifecycle)
-    implementation(libs.androidx.camera.view)
-    implementation(libs.mlkit.face.detection)
-
-    // Point 5 (daily improvement memory): local persistence of session
-    // summaries, no server-side storage.
-    implementation(libs.androidx.room.runtime)
-    implementation(libs.androidx.room.ktx)
-    ksp(libs.androidx.room.compiler)
 }

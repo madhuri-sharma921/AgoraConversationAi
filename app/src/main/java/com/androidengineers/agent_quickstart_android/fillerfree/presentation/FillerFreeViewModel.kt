@@ -2,19 +2,19 @@ package com.androidengineers.agent_quickstart_android.fillerfree.presentation
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.androidengineers.agent_quickstart_android.data.ConversationRepository
+import com.androidengineers.agent_quickstart_android.fillerfree.camera.EyeContactAnalyzer
 import com.androidengineers.agent_quickstart_android.fillerfree.config.CoachAgentPromptBuilder
-import com.androidengineers.agent_quickstart_android.fillerfree.data.SessionHistoryRepositoryImpl
 import com.androidengineers.agent_quickstart_android.fillerfree.data.TranscriptAnalyticsRepositoryImpl
-import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.CoachRole
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.EyeContactState
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SessionRecord
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SpeechEventType
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.model.SpeechTopic
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.repository.SessionHistoryRepository
 import com.androidengineers.agent_quickstart_android.fillerfree.domain.repository.TranscriptAnalyticsRepository
-import com.androidengineers.agent_quickstart_android.fillerfree.domain.usecase.RouteCoachRoleUseCase
-import com.androidengineers.agent_quickstart_android.fillerfree.visual.VisualCoachManager
+import com.androidengineers.agent_quickstart_android.fillerfree.domain.usecase.BuildProgressSummaryUseCase
+import com.androidengineers.agent_quickstart_android.fillerfree.history.data.RoomSessionHistoryRepository
 import com.androidengineers.agent_quickstart_android.model.TranscriptSpeaker
 import com.androidengineers.agent_quickstart_android.rtc.AgoraConversationSessionManager
 import kotlinx.coroutines.channels.Channel
@@ -42,20 +42,17 @@ import kotlinx.coroutines.launch
 class FillerFreeViewModel(
     application: Application,
     private val analyticsRepository: TranscriptAnalyticsRepository = TranscriptAnalyticsRepositoryImpl(),
-    private val sessionHistoryRepository: SessionHistoryRepository = SessionHistoryRepositoryImpl(
-        application
-    ),
+    private val historyRepository: SessionHistoryRepository = RoomSessionHistoryRepository(application),
+    private val buildProgressSummary: BuildProgressSummaryUseCase = BuildProgressSummaryUseCase(),
 ) : AndroidViewModel(application) {
 
     private val conversationRepository = ConversationRepository()
     private val sessionManager = AgoraConversationSessionManager(application)
-    private val routeCoachRole = RouteCoachRoleUseCase()
 
-
-    // Point 4 (visual coaching, tier 1): local-only camera + face detection.
-    // Lazily constructed since it touches CameraX APIs that only make sense
-    // once the user has actually opted in (see toggleVisualCoaching).
-    private val visualCoachManager = VisualCoachManager(application)
+    // Owned here (not in the repository) because it wraps a CameraX/ML Kit
+    // pipeline with real native resources — same lifecycle rationale as
+    // sessionManager owning the RTC/RTM native resources below.
+    val eyeContactAnalyzer = EyeContactAnalyzer()
 
     private val _uiState = MutableStateFlow(FillerFreeUiState())
     val uiState: StateFlow<FillerFreeUiState> = _uiState.asStateFlow()
@@ -63,22 +60,12 @@ class FillerFreeViewModel(
     private val eventChannel = Channel<FillerFreeUiEvent>(Channel.BUFFERED)
     val uiEvents = eventChannel.receiveAsFlow()
 
-    private var activeAgentId: String? = null
-    private var currentTopic: SpeechTopic? = null
+    private val activeAgentIds = mutableSetOf<String>()
 
     // Tracks the last-seen text length per turn key, so we only feed the
     // *new* substring of a growing IN_PROGRESS turn into the analyzer,
     // rather than re-analyzing the whole turn on every partial update.
     private val analyzedLengthByTurnKey = mutableMapOf<String, Int>()
-
-    // Multi-coach routing state (point 3). Recent-event timestamps in a
-    // rolling window feed RouteCoachRoleUseCase; role switches are
-    // throttled since each one is a real server-side leave+join, not a
-    // free client-side toggle.
-    private val recentFillerTimestampsMs = ArrayDeque<Long>()
-    private val recentRepetitionTimestampsMs = ArrayDeque<Long>()
-    private var lastRoleSwitchAtMs = 0L
-    private var isSwitchingRole = false
 
     init {
         viewModelScope.launch {
@@ -94,15 +81,6 @@ class FillerFreeViewModel(
                 if (event.type == SpeechEventType.AGENT_INTERRUPTION) {
                     eventChannel.trySend(FillerFreeUiEvent.InterruptionFlash)
                 }
-
-                when (event.type) {
-                    SpeechEventType.FILLER_WORD -> recentFillerTimestampsMs.addLast(event.timestampMs)
-                    SpeechEventType.REPETITION -> recentRepetitionTimestampsMs.addLast(event.timestampMs)
-                    SpeechEventType.AGENT_INTERRUPTION -> Unit
-                }
-                pruneWindow(recentFillerTimestampsMs, event.timestampMs)
-                pruneWindow(recentRepetitionTimestampsMs, event.timestampMs)
-                maybeRouteCoachRole(event.timestampMs)
             }
         }
         viewModelScope.launch {
@@ -111,17 +89,34 @@ class FillerFreeViewModel(
                 sessionManager.pushCoachSignal(
                     "user_energy=${signal.label} wpm=${signal.wordsPerMinute.toInt()}"
                 )
-                maybeRouteCoachRole(signal.computedAtMs)
             }
         }
 
-        // Real, measured interrupt latency (user speaks -> agent actually
-        // stops), sourced from AgoraConversationSessionManager's own
-        // timestamps rather than derived from transcript-chunk arrival —
-        // see requestAgentInterruptFromUserSpeech / updateAgentState there.
-        sessionManager.setOnInterruptLatencyMeasured { latencyMs ->
-            analyticsRepository.recordInterruptLatency(latencyMs, System.currentTimeMillis())
-            eventChannel.trySend(FillerFreeUiEvent.InterruptionFlash)
+        // Real-audio path: independent of transcript chunk timing, so the
+        // emotion read updates on a steady ~300ms cadence from the mic
+        // itself rather than waiting on STT to push a transcript delta.
+        viewModelScope.launch {
+            sessionManager.voiceProsodyAnalyzer.prosodySamples.collect { sample ->
+                analyticsRepository.onVoiceProsodySample(sample)
+            }
+        }
+
+        // Reacts to EyeContactAnalyzer regardless of whether the camera is
+        // currently bound — when coaching is off or permission is missing,
+        // EyeContactCameraBinding never binds the camera, so this flow just
+        // stays at its DISABLED-equivalent starting value. We still gate the
+        // displayed state on the toggle here so the UI never shows a stale
+        // "Good eye contact" read from a previous session after being
+        // switched off mid-flow.
+        viewModelScope.launch {
+            eyeContactAnalyzer.eyeContactState.collect { rawState ->
+                val enabled = _uiState.value.eyeContactCoachingEnabled && _uiState.value.hasCameraPermission
+                val displayState = if (enabled) rawState else EyeContactState.DISABLED
+                _uiState.update { it.copy(eyeContactState = displayState) }
+                if (enabled && displayState == EyeContactState.LOOKING_AWAY) {
+                    sessionManager.pushCoachSignal("eye_contact=looking_away")
+                }
+            }
         }
 
         viewModelScope.launch {
@@ -147,25 +142,12 @@ class FillerFreeViewModel(
                     }
                 }
 
-                _uiState.update { it.copy(liveTranscript = liveTranscriptText) }
+                _uiState.update { it.copy(
+                    liveTranscript = liveTranscriptText,
+                    agentState = snapshot.agentState,
+                    agentStates = it.agentStates + ("primary" to snapshot.agentState)
+                ) }
             }
-        }
-
-        // Point 4 (visual coaching): surface the local attention signal in
-        // UI state when the feature is on. When it's off, VisualCoachManager
-        // is simply never started (see toggleVisualCoaching), so this flow
-        // just idles at null.
-        viewModelScope.launch {
-            visualCoachManager.attentionSignal.collect { signal ->
-                _uiState.update { it.copy(attentionSignal = signal) }
-            }
-        }
-
-        // Point 5 (daily improvement memory): load the trend across recent
-        // local sessions once at startup, so it's ready to show on the topic
-        // select screen without the user having to ask for it.
-        viewModelScope.launch {
-            refreshDailyProgress()
         }
     }
 
@@ -173,14 +155,37 @@ class FillerFreeViewModel(
         _uiState.update { it.copy(selectedTopic = topic) }
     }
 
+    fun setUserName(name: String) {
+        _uiState.update { it.copy(userName = name) }
+    }
+
+    /** Called from the InSessionScreen toggle. Does not itself request permission. */
+    fun setEyeContactCoachingEnabled(enabled: Boolean) {
+        _uiState.update {
+            it.copy(
+                eyeContactCoachingEnabled = enabled,
+                eyeContactState = if (enabled && it.hasCameraPermission) it.eyeContactState else EyeContactState.DISABLED,
+            )
+        }
+        if (!enabled) eyeContactAnalyzer.reset()
+    }
+
+    /** Called from MainActivity after the CAMERA permission result comes back. */
+    fun setHasCameraPermission(granted: Boolean) {
+        _uiState.update {
+            it.copy(
+                hasCameraPermission = granted,
+                eyeContactState = if (granted && it.eyeContactCoachingEnabled) it.eyeContactState else EyeContactState.DISABLED,
+            )
+        }
+    }
+
     fun startSession() {
         val topic = _uiState.value.selectedTopic ?: SpeechTopic.FREE_TALK
-        currentTopic = topic
         analyticsRepository.reset()
+        eyeContactAnalyzer.reset()
         analyzedLengthByTurnKey.clear()
-        recentFillerTimestampsMs.clear()
-        recentRepetitionTimestampsMs.clear()
-        lastRoleSwitchAtMs = 0L
+        activeAgentIds.clear()
         _uiState.update {
             it.copy(
                 screen = FillerFreeUiState.Screen.IN_SESSION,
@@ -189,7 +194,6 @@ class FillerFreeViewModel(
                 recentEvents = emptyList(),
                 summary = null,
                 errorMessage = null,
-                activeCoachRole = CoachRole.DELIVERY,
             )
         }
 
@@ -209,37 +213,27 @@ class FillerFreeViewModel(
                     ?.toString()
                     ?: bootstrap.uid
 
-                // Every session starts with the Delivery coach holding the
-                // floor; RouteCoachRoleUseCase may hand off to Content/Energy
-                // as the conversation develops (see maybeRouteCoachRole).
-                //
-                // Point 5: if a prior session logged a recurring filler habit,
-                // pass it as CoachAgentPromptBuilder's memory clause so the
-                // agent can reference it ("There's 'um' again") — this is
-                // what makes the coach feel like it remembers the user
-                // across sessions without any server-side storage.
-                val priorHabit = runCatching { sessionHistoryRepository.mostRecentSession() }
-                    .getOrNull()
-                    ?.topOffender
-                val prompt = CoachAgentPromptBuilder.build(topic, CoachRole.DELIVERY, priorHabit)
-                val inviteResult = conversationRepository.inviteAgent(
-                    channelName = bootstrap.channel,
-                    requesterRtcUid = requesterRtcUid,
-                    systemPrompt = prompt,
-                    role = CoachRole.DELIVERY.id,
-                )
-                activeAgentId = inviteResult.agentId
-                sessionManager.setActiveAgentId(activeAgentId)
-                sessionManager.setCoachAgent(
-                    role = inviteResult.role,
-                    agentId = inviteResult.agentId,
-                    rtcUid = inviteResult.rtcUid,
-                )
+                // Invite 3 specialized agents with a small delay between each
+                CoachAgentPromptBuilder.CoachRole.entries.forEach { role ->
+                    val prompt = CoachAgentPromptBuilder.build(topic, role)
+                    val inviteResult = conversationRepository.inviteAgent(
+                        channelName = bootstrap.channel,
+                        requesterRtcUid = requesterRtcUid,
+                        systemPrompt = prompt,
+                    )
+                    activeAgentIds.add(inviteResult.agentId)
+                    kotlinx.coroutines.delay(500) // Small delay to avoid race conditions or limits
+                }
+                
+                // Track the first one for basic state updates in sessionManager
+                if (activeAgentIds.isNotEmpty()) {
+                    sessionManager.setActiveAgentId(activeAgentIds.first())
+                }
             }.onSuccess {
                 _uiState.update { it.copy(isConnecting = false, isSessionActive = true) }
             }.onFailure { error ->
                 sessionManager.disconnect(resetSnapshot = true)
-                activeAgentId = null
+                activeAgentIds.clear()
                 _uiState.update {
                     it.copy(
                         isConnecting = false,
@@ -255,30 +249,39 @@ class FillerFreeViewModel(
     fun endSession() {
         viewModelScope.launch {
             runCatching {
-                activeAgentId?.let { agentId ->
-                    val channelName = sessionManager.snapshot.value.channelName
-                    if (channelName != null) {
+                val channelName = sessionManager.snapshot.value.channelName
+                if (channelName != null) {
+                    activeAgentIds.forEach { agentId ->
                         conversationRepository.stopConversation(agentId, channelName)
                     }
                 }
             }
-            val topicIdForHistory = currentTopic?.id ?: SpeechTopic.FREE_TALK.id
-            activeAgentId = null
-            currentTopic = null
-            recentFillerTimestampsMs.clear()
-            recentRepetitionTimestampsMs.clear()
+            activeAgentIds.clear()
             sessionManager.setActiveAgentId(null)
             sessionManager.disconnect(resetSnapshot = true)
-            stopVisualCoaching()
 
             val summary = analyticsRepository.buildSummary()
+            val topic = _uiState.value.selectedTopic ?: SpeechTopic.FREE_TALK
 
-            // Point 5: persist this session locally so future sessions can
-            // reference it (memory clause) and the daily-progress trend
-            // reflects it. Best-effort — a persistence failure shouldn't
-            // block showing the summary screen.
-            runCatching { sessionHistoryRepository.recordSession(topicIdForHistory, summary) }
-            refreshDailyProgress()
+            // Only log a real attempt — a near-empty session (permission
+            // denied, immediate hangup) would just add noise to trends.
+            if (summary.stats.wordCount >= MIN_WORDS_TO_LOG_SESSION) {
+                runCatching {
+                    historyRepository.saveSession(
+                        SessionRecord(
+                            topicId = topic.id,
+                            topicTitle = topic.title,
+                            completedAtMs = System.currentTimeMillis(),
+                            durationMs = summary.stats.durationMs,
+                            fillerCount = summary.stats.fillerCount,
+                            repetitionCount = summary.stats.repetitionCount,
+                            interruptionCount = summary.stats.interruptionCount,
+                            wordCount = summary.stats.wordCount,
+                            topOffender = summary.topOffender,
+                        )
+                    )
+                }
+            }
 
             _uiState.update {
                 it.copy(
@@ -290,6 +293,20 @@ class FillerFreeViewModel(
         }
     }
 
+    fun openProgressScreen() {
+        viewModelScope.launch {
+            val history = runCatching {
+                historyRepository.recentSessions(SessionHistoryRepository.DEFAULT_HISTORY_LIMIT)
+            }.getOrDefault(emptyList())
+            val progress = buildProgressSummary(history)
+            _uiState.update { it.copy(screen = FillerFreeUiState.Screen.PROGRESS, progressSummary = progress) }
+        }
+    }
+
+    fun closeProgressScreen() {
+        _uiState.update { it.copy(screen = FillerFreeUiState.Screen.SUMMARY) }
+    }
+
     fun startNewSession() {
         analyticsRepository.reset()
         analyzedLengthByTurnKey.clear()
@@ -298,111 +315,14 @@ class FillerFreeViewModel(
         }
     }
 
-    /**
-     * Point 4 (visual coaching): user-initiated opt-in/opt-out. Requires the
-     * caller (see MainActivity) to have already obtained the CAMERA
-     * permission — this does not request it, matching how RECORD_AUDIO is
-     * handled for [startSession]. Safe to call whether or not a session is
-     * currently active; if a session is active, the camera binds/unbinds
-     * immediately against the given [lifecycleOwner].
-     */
-    fun toggleVisualCoaching(enabled: Boolean, lifecycleOwner: LifecycleOwner) {
-        _uiState.update { it.copy(visualCoachingEnabled = enabled) }
-        if (enabled) {
-            visualCoachManager.start(lifecycleOwner)
-        } else {
-            visualCoachManager.stop()
-        }
-    }
-
-    private fun stopVisualCoaching() {
-        visualCoachManager.stop()
-        _uiState.update { it.copy(visualCoachingEnabled = false, attentionSignal = null) }
-    }
-
-    private suspend fun refreshDailyProgress() {
-        runCatching { sessionHistoryRepository.recentSessions(limit = DAILY_PROGRESS_SESSION_WINDOW) }
-            .getOrNull()
-            ?.let { recentSessions ->
-               // val progress = buildDailyProgress(recentSessions)
-             //   _uiState.update { it.copy(dailyProgress = progress?.toUiModel()) }
-            }
-    }
-
-    /** Drops timestamps older than the routing window from a rolling deque. */
-    private fun pruneWindow(timestamps: ArrayDeque<Long>, nowMs: Long) {
-        while (timestamps.isNotEmpty() && nowMs - timestamps.first() > ROUTING_WINDOW_MS) {
-            timestamps.removeFirst()
-        }
-    }
-
-    /**
-     * Asks [RouteCoachRoleUseCase] who should have the floor right now and,
-     * if it disagrees with the current role and we're not mid-switch or
-     * still inside the cooldown, kicks off a real server-side switch. Each
-     * switch is a genuine leave+join (see AgoraConversationSessionManager /
-     * server routes.py switch-role), so this is throttled deliberately —
-     * unlike a client-side UI toggle, this has real network/session cost.
-     */
-    private fun maybeRouteCoachRole(nowMs: Long) {
-        if (!_uiState.value.isSessionActive || isSwitchingRole) return
-        if (nowMs - lastRoleSwitchAtMs < ROLE_SWITCH_COOLDOWN_MS) return
-
-        val currentRole = _uiState.value.activeCoachRole
-        val nextRole = routeCoachRole(
-            emotion = _uiState.value.currentEmotion,
-            recentFillerCount = recentFillerTimestampsMs.size,
-            recentRepetitionCount = recentRepetitionTimestampsMs.size,
-            currentRole = currentRole,
-        )
-        if (nextRole != currentRole) {
-            switchToRole(nextRole, nowMs)
-        }
-    }
-
-    private fun switchToRole(role: CoachRole, nowMs: Long) {
-        val channelName = sessionManager.snapshot.value.channelName ?: return
-        val requesterRtcUid = sessionManager.snapshot.value.localRtcUid
-            .takeIf { it > 0 }
-            ?.toString()
-            ?: return
-        val topic = currentTopic ?: SpeechTopic.FREE_TALK
-
-        isSwitchingRole = true
-        lastRoleSwitchAtMs = nowMs
-        viewModelScope.launch {
-            runCatching {
-                val prompt = CoachAgentPromptBuilder.build(topic, role)
-                conversationRepository.switchCoachRole(
-                    channelName = channelName,
-                    requesterRtcUid = requesterRtcUid,
-                    role = role.id,
-                    systemPrompt = prompt,
-                )
-            }.onSuccess { result ->
-                activeAgentId = result.agentId
-                sessionManager.setActiveAgentId(activeAgentId)
-                sessionManager.setCoachAgent(
-                    role = result.role,
-                    agentId = result.agentId,
-                    rtcUid = result.rtcUid,
-                )
-                _uiState.update { it.copy(activeCoachRole = role) }
-                eventChannel.trySend(FillerFreeUiEvent.CoachSwitched(role))
-            }.onFailure {
-                // Non-fatal: stay on the current coach rather than tearing
-                // down the session over a failed hand-off. The next routing
-                // check will simply try again once conditions still call for it.
-            }
-            isSwitchingRole = false
-        }
-    }
-
     override fun onCleared() {
-        sessionManager.setOnInterruptLatencyMeasured(null)
         sessionManager.release()
-        visualCoachManager.release()
+        eyeContactAnalyzer.close()
         super.onCleared()
+    }
+
+    companion object {
+        private const val MIN_WORDS_TO_LOG_SESSION = 5
     }
 }
 
@@ -410,27 +330,4 @@ private inline fun MutableStateFlow<FillerFreeUiState>.update(
     block: (FillerFreeUiState) -> FillerFreeUiState,
 ) {
     value = block(value)
-}
-
-private const val ROUTING_WINDOW_MS = 10_000L
-private const val ROLE_SWITCH_COOLDOWN_MS = 20_000L
-private const val DAILY_PROGRESS_SESSION_WINDOW = 10
-
-/** Maps the domain [com.androidengineers.agent_quickstart_android.fillerfree.domain.model.DailyProgress] to a UI-ready model. */
-private fun com.androidengineers.agent_quickstart_android.fillerfree.domain.model.DailyProgress.toUiModel(): DailyProgressUiModel {
-    return DailyProgressUiModel(
-        sessionCount = sessionCount,
-        issuesPerMinuteTrend = issuesPerMinuteTrend,
-        mostCommonFillerWord = mostCommonFillerWord,
-        improvementText = buildImprovementText(),
-    )
-}
-
-private fun com.androidengineers.agent_quickstart_android.fillerfree.domain.model.DailyProgress.buildImprovementText(): String? {
-    val improvement = issuesPerMinuteImprovement ?: return null
-    return when {
-        improvement > 0.5 -> "Down %.1f issues/min from your recent average — nice progress.".format(improvement)
-        improvement < -0.5 -> "Up %.1f issues/min from your recent average.".format(-improvement)
-        else -> "About steady with your recent average."
-    }
 }
