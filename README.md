@@ -78,6 +78,9 @@ pip install -r requirements.txt
 ```
 See `docs/local-tunnels.md` if you're testing on a physical device and need
 to tunnel the backend.
+winget install ngrok
+ngrok config add-authtoken YOUR_TOKEN_HERE // this token-ngrok website
+ngrok http 8000
 
 Then open the root folder in Android Studio, let Gradle sync, build, and run.
 
